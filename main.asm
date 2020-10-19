@@ -14,6 +14,11 @@ includelib    kernel32.lib
 includelib      msvcrt.lib
 printf          PROTO C :ptr sbyte, :VARARG
 scanf           PROTO C :ptr sbyte, :VARARG
+sscanf          PROTO C :ptr byte,:ptr sbyte,:VARARG
+
+;常量定义
+BUF_SIZE = 4096
+
 
 ; sqlite 相关函数原型定义
 ; 打开数据库
@@ -48,6 +53,11 @@ Message STRUCT
 	content_type DWORD 0; 消息类型：文本-0 图片-1
 	content BYTE 200 dup(0); 消息内容
 Message ENDS
+
+Client STRUCT
+	clientSocket DWORD -1;
+	user User<>
+Client ENDS
 
 .const
 PORT DWORD 5000
@@ -85,16 +95,37 @@ insert_message_data_sql BYTE    "insert into messages(times,sender_id,receiver_i
 select_user_data_sql    BYTE    "select * from users",0
 select_message_data_sql  BYTE   "select * from messages",0
 
+
+; WSAData init
+wsaData WSADATA <>
+wVersion WORD 0202h
+
 ; listen socket
 listen_socket  dword 0
 
 greetMsg BYTE "Starting Server...",0dh,0ah,0
 
+; parse Args
+argsFormat BYTE "%s",0
+
+loginArgsFormat BYTE "%s %s %s",0
+sendTextArgsFormat BYTE "%s %d %s",0
+sendImageArgsFormat BYTE "%s %d %s",0
+
+; command constants
+LOGIN_COMMAND BYTE "LOGIN",0
+SEND_TEXT_COMMAND BYTE "TEXT",0
+SEND_IMAGE_COMMAND BYTE "IMAGE",0
+
+; logs print format
+numberFormat BYTE "%d",0dh,0ah,0
+loginLogFormat BYTE "User %s %s want to login",0dh,0ah,0
 
 .code
 init_db PROC
 	push ebp
 	mov ebp,esp
+
 	invoke   LoadLibrary,offset lib_name
 	mov      sqlite_lib,eax
 	invoke   GetProcAddress,sqlite_lib,addr sqlite3_open
@@ -105,29 +136,66 @@ init_db PROC
 	mov		 sqlite_exec,eax
 	invoke   sqlite_open,offset file_name,offset sqlite_db
 	invoke   sqlite_exec,sqlite_db,addr create_user_table_sql,NULL,NULL,offset error_info
+
 	leave
 	ret
 init_db ENDP
 
-handle_request PROC client_socket:DWORD
-	push ebp
-	mov ebp,esp
-	
-	local @buf[4096]:byte
+handle_login PROC client_socket:DWORD,@bufAddr:ptr BYTE 
+	local commandType[BUF_SIZE]:byte
+	local usernameBuf[BUF_SIZE]:byte
+	local passwordBuf[BUF_SIZE]:byte
 
+	invoke sscanf,@bufAddr,addr loginArgsFormat,addr commandType,addr usernameBuf,addr passwordBuf
+	invoke printf,addr loginLogFormat,addr usernameBuf,addr passwordBuf
+
+	ret
+handle_login ENDP
+
+handle_request PROC client_socket:DWORD
+	local @buf[BUF_SIZE]:byte
+	local commandType[BUF_SIZE]:byte
+	
 	invoke recv,client_socket,addr @buf,sizeof @buf,0
 
-	;TODO handle request
+	invoke printf,addr @buf
 
-	leave
+	;TODO handle request
+	INVOKE sscanf,addr @buf,addr argsFormat,addr commandType;
+
+	; handle LOGIN
+	invoke lstrcmp,addr LOGIN_COMMAND,addr commandType
+	.if eax ==0
+		invoke handle_login,client_socket,addr @buf
+	.endif
+
+	; handle send text
+	invoke lstrcmp,addr SEND_TEXT_COMMAND,addr commandType
+	.if eax==0
+
+	.endif
+
+	; handle send image
+	invoke lstrcmp,addr SEND_IMAGE_COMMAND,addr commandType
+	.if eax==0
+
+	.endif
+
 	ret
 handle_request ENDP
 
 init_server PROC
-	push ebp
-	mov ebp,esp
 	local @sock_addr:sockaddr_in
-	invoke socket,AF_INET,SOCK_STREAM,0
+
+	invoke WSAStartup,wVersion,addr wsaData
+
+	invoke socket,AF_INET,SOCK_STREAM,IPPROTO_TCP
+	.if eax == INVALID_SOCKET
+		invoke WSAGetLastError
+		invoke printf ,addr numberFormat,eax
+	.ENDIF
+
+
 	mov listen_socket,eax
 	invoke RtlZeroMemory,addr @sock_addr,sizeof @sock_addr
 	invoke htons,PORT
@@ -137,7 +205,7 @@ init_server PROC
 	invoke bind,listen_socket,addr @sock_addr,sizeof @sock_addr
 	
 	invoke listen,listen_socket,10
-	.while TRUE
+	.while 1
 		invoke accept,listen_socket,NULL,0
 		.if eax==INVALID_SOCKET
 			.break
@@ -149,7 +217,6 @@ init_server PROC
 	.endw
 	invoke closesocket,listen_socket
 
-	leave
 	ret
 init_server ENDP
 
