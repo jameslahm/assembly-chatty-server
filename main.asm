@@ -15,6 +15,7 @@ includelib      msvcrt.lib
 printf          PROTO C :ptr sbyte, :VARARG
 scanf           PROTO C :ptr sbyte, :VARARG
 sscanf          PROTO C :ptr byte,:ptr sbyte,:VARARG
+sprintf         PROTO C :ptr byte,:ptr sbyte,:VARARG
 
 ;常量定义
 BUF_SIZE = 4096
@@ -40,8 +41,8 @@ SQLITE_EXEC  typedef ptr   SQLITE_EXEC_PROTO
 ; 数据结构定义
 User STRUCT
 	id	DWORD 0; 用户id
-	username BYTE 30 dup(0);用户名 最长30个字节
 	password BYTE 30 dup(0);用户密码 最长30个字节
+	username BYTE 30 dup(0);用户名 最长30个字节
 	avatar BYTE 120 dup(0);用户头像链接 最长120个字节
 User ENDS
 
@@ -58,6 +59,8 @@ Client STRUCT
 	clientSocket DWORD -1;
 	user User<>
 Client ENDS
+
+
 
 .const
 PORT DWORD 5000
@@ -118,8 +121,33 @@ SEND_TEXT_COMMAND BYTE "TEXT",0
 SEND_IMAGE_COMMAND BYTE "IMAGE",0
 
 ; logs print format
-numberFormat BYTE "%d",0dh,0ah,0
-loginLogFormat BYTE "User %s %s want to login",0dh,0ah,0
+debugFormat BYTE "DEBUG!!",0dh,0ah,0
+debugStrFormat BYTE "DEBUG %s",0dh,0ah,0
+debugNumFormat BYTE "DEBUG %d",0dh,0ah,0
+loginLogFormat BYTE "User %s(password:%s) login",0dh,0ah,0
+sendTextLogFormat BYTE "User %s send %s(text) to %d",0dh,0ah,0
+sendImageLogFormat BYTE "User %s send %s(image) to %d",0dh,0ah,0
+
+; response message
+successResponse BYTE "SUCCESS",0dh,0ah,0
+successResponseLen DWORD 9
+failureResponse BYTE "ERROR",0dh,0ah,0
+failureResponseLen DWORD 9
+
+textResponseFormat BYTE "TEXT %s",0dh,0ah,0
+imageResponseFormat BYTE "IMAGE %s",0dh,0ah,0
+
+; all clients
+clients Client 50 dup(<>)
+fakeId DWORD 1
+
+; heap handle
+hHeap DWORD ?
+
+GetClient MACRO client:=<client>
+	mov eax,client
+	assume eax:ptr Client
+ENDM
 
 .code
 init_db PROC
@@ -141,45 +169,179 @@ init_db PROC
 	ret
 init_db ENDP
 
-handle_login PROC client_socket:DWORD,@bufAddr:ptr BYTE 
+getClientById PROC receiverId:DWORD
+	mov eax,offset clients
+	assume eax:ptr Client
+	.WHILE TRUE
+		mov ebx,[eax].user.id
+		.if ebx == receiverId 
+			assume eax:nothing
+			.BREAK
+		.else
+			add eax,sizeof Client
+		.endif
+	.ENDW
+	ret
+getClientById ENDP
+
+handle_login PROC USES eax client:ptr Client,@bufAddr:ptr BYTE 
 	local commandType[BUF_SIZE]:byte
-	local usernameBuf[BUF_SIZE]:byte
-	local passwordBuf[BUF_SIZE]:byte
 
-	invoke sscanf,@bufAddr,addr loginArgsFormat,addr commandType,addr usernameBuf,addr passwordBuf
-	invoke printf,addr loginLogFormat,addr usernameBuf,addr passwordBuf
 
+	GetClient
+	lea ebx,[eax].user.username
+	lea ecx,[eax].user.password
+	invoke sscanf,@bufAddr,addr loginArgsFormat,addr commandType,ebx,ecx
+
+
+	; TODO: verify login
+
+
+
+	GetClient
+	push fakeId
+	pop [eax].user.id
+	inc fakeId
+
+	GetClient
+	lea ebx,[eax].user.username
+	lea ecx,[eax].user.password
+	invoke printf,addr loginLogFormat,ebx,ecx
+
+	GetClient
+	invoke send,[eax].clientSocket,addr successResponse,successResponseLen,0
+
+	assume eax:nothing
 	ret
 handle_login ENDP
 
-handle_request PROC client_socket:DWORD
+handle_send_message PROC USES eax client:ptr Client,@bufAddr:ptr BYTE
+	local commandType[BUF_SIZE]:byte
+	local receiverId:DWORD
+	local message[BUF_SIZE]:byte
+	local receiver:ptr Clinet
+	local receiverBuf[BUF_SIZE]:byte
+
+	invoke sscanf,@bufAddr,addr sendTextArgsFormat,addr commandType,addr receiverId,addr message
+
+	GetClient
+	lea ebx,[eax].user.username
+	lea ecx,[eax].user.password
+	invoke printf,addr sendTextLogFormat,ebx,addr message,receiverId
+
+
+	GetClient
+	invoke send,[eax].clientSocket,addr successResponse,successResponseLen,0
+
+	invoke getClientById,receiverId
+	mov receiver,eax
+
+	invoke sprintf,addr receiverBuf,addr textResponseFormat,addr message
+
+	invoke lstrlen,addr receiverBuf
+	mov ecx,eax
+
+	GetClient receiver
+	mov ebx,[eax].clientSocket
+	invoke send,ebx,addr receiverBuf,ecx,0
+	
+
+	assume eax:nothing
+
+	ret
+handle_send_message ENDP
+
+handle_send_image PROC USES eax client:ptr Client,@bufAddr:ptr BYTE
+	local commandType[BUF_SIZE]:byte
+	local receiverId:DWORD
+	local imageBuf[BUF_SIZE]:byte
+
+	invoke sscanf,@bufAddr,addr sendImageArgsFormat,addr commandType,addr receiverId,addr imageBuf
+
+	GetClient
+	lea ebx,[eax].user.username
+	lea ecx,[eax].user.password
+	invoke printf,addr sendImageLogFormat,ebx,addr imageBuf,receiverId
+
+
+	GetClient
+	invoke send,[eax].clientSocket,addr successResponse,successResponseLen,0
+
+
+
+	assume eax:nothing
+
+	ret
+
+handle_send_image ENDP
+
+init_client PROC clientSocket:DWORD
+	mov eax,offset clients
+	assume eax:ptr Client
+	.WHILE TRUE
+		.if [eax].clientSocket == -1
+			push clientSocket
+			pop [eax].clientSocket
+			assume eax:nothing
+			.BREAK
+		.else
+			add eax,sizeof Client
+		.endif
+	.ENDW
+	ret
+init_client ENDP
+
+handle_request PROC clientSocket:DWORD
 	local @buf[BUF_SIZE]:byte
 	local commandType[BUF_SIZE]:byte
+	local client:ptr Client
 	
-	invoke recv,client_socket,addr @buf,sizeof @buf,0
+	invoke init_client,clientSocket
+	mov client,eax
+	
+	;invoke RtlZeroMemory,addr client,sizeof client
 
-	invoke printf,addr @buf
+	.WHILE TRUE
 
-	;TODO handle request
-	INVOKE sscanf,addr @buf,addr argsFormat,addr commandType;
+		invoke RtlZeroMemory,addr @buf,sizeof @buf
+		invoke RtlZeroMemory,addr commandType,sizeof commandType
 
-	; handle LOGIN
-	invoke lstrcmp,addr LOGIN_COMMAND,addr commandType
-	.if eax ==0
-		invoke handle_login,client_socket,addr @buf
-	.endif
+		GetClient
+		mov ebx,[eax].clientSocket
+		invoke recv,ebx,addr @buf,sizeof @buf,0
 
-	; handle send text
-	invoke lstrcmp,addr SEND_TEXT_COMMAND,addr commandType
-	.if eax==0
+		; client has close the socket
+		.IF eax==0
+			GetClient
+			INVOKE closesocket,[eax].clientSocket
 
-	.endif
+			GetClient
+			mov [eax].clientSocket,-1
+			.break
+		.ENDIF
+		invoke printf,addr @buf
 
-	; handle send image
-	invoke lstrcmp,addr SEND_IMAGE_COMMAND,addr commandType
-	.if eax==0
+		;TODO handle request
+		INVOKE sscanf,addr @buf,addr argsFormat,addr commandType;
 
-	.endif
+		; handle LOGIN
+		invoke lstrcmp,addr LOGIN_COMMAND,addr commandType
+		.if eax ==0
+			invoke handle_login,client,addr @buf
+		.endif
+
+		; handle send text
+		invoke lstrcmp,addr SEND_TEXT_COMMAND,addr commandType
+		.if eax==0
+			invoke handle_send_message,client,addr @buf
+		.endif
+
+		; handle send image
+		invoke lstrcmp,addr SEND_IMAGE_COMMAND,addr commandType
+		.if eax==0
+			invoke handle_send_image,client,addr @buf
+		.endif
+	.ENDW
 
 	ret
 handle_request ENDP
@@ -192,7 +354,7 @@ init_server PROC
 	invoke socket,AF_INET,SOCK_STREAM,IPPROTO_TCP
 	.if eax == INVALID_SOCKET
 		invoke WSAGetLastError
-		invoke printf ,addr numberFormat,eax
+		invoke printf ,addr debugNumFormat,eax
 	.ENDIF
 
 
@@ -222,6 +384,8 @@ init_server ENDP
 
 main PROC
 	invoke init_db
+	INVOKE GetProcessHeap
+	mov hHeap,eax
 	invoke init_server
 	invoke printf,offset greetMsg
 main endp
