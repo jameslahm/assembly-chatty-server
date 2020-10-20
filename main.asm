@@ -303,12 +303,12 @@ handle_request PROC clientSocket:DWORD
 
 	.WHILE TRUE
 
-		invoke RtlZeroMemory,addr @buf,sizeof @buf
-		invoke RtlZeroMemory,addr commandType,sizeof commandType
+		invoke RtlZeroMemory,addr @buf,BUF_SIZE
+		invoke RtlZeroMemory,addr commandType,BUF_SIZE
 
 		GetClient
 		mov ebx,[eax].clientSocket
-		invoke recv,ebx,addr @buf,sizeof @buf,0
+		invoke recv,ebx,addr @buf,BUF_SIZE - 1,0
 
 		; client has close the socket
 		.IF eax==0
@@ -320,6 +320,7 @@ handle_request PROC clientSocket:DWORD
 			.break
 		.ENDIF
 		invoke printf,addr @buf
+
 
 		;TODO handle request
 		INVOKE sscanf,addr @buf,addr argsFormat,addr commandType;
