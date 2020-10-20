@@ -10,12 +10,17 @@ include       wsock32.inc
 includelib    wsock32.lib
 includelib    user32.lib
 includelib    kernel32.lib
+include       comdlg32.inc
+includelib    comdlg32.lib
 
 includelib      msvcrt.lib
 printf          PROTO C :ptr sbyte, :VARARG
 scanf           PROTO C :ptr sbyte, :VARARG
 sscanf          PROTO C :ptr byte,:ptr sbyte,:VARARG
 sprintf         PROTO C :ptr byte,:ptr sbyte,:VARARG
+srand           PROTO C :dword
+rand            PROTO C
+time	        PROTO C :ptr dword
 
 ;常量定义
 BUF_SIZE = 4096
@@ -113,7 +118,7 @@ argsFormat BYTE "%s",0
 
 loginArgsFormat BYTE "%s %s %s",0
 sendTextArgsFormat BYTE "%s %d %s",0
-sendImageArgsFormat BYTE "%s %d %s",0
+sendImageArgsFormat BYTE "%s %d %d",0
 
 ; command constants
 LOGIN_COMMAND BYTE "LOGIN",0
@@ -126,7 +131,7 @@ debugStrFormat BYTE "DEBUG %s",0dh,0ah,0
 debugNumFormat BYTE "DEBUG %d",0dh,0ah,0
 loginLogFormat BYTE "User %s(password:%s) login",0dh,0ah,0
 sendTextLogFormat BYTE "User %s send %s(text) to %d",0dh,0ah,0
-sendImageLogFormat BYTE "User %s send %s(image) to %d",0dh,0ah,0
+sendImageLogFormat BYTE "User %s send %s(image:%d) to %d",0dh,0ah,0
 
 ; response message
 successResponse BYTE "SUCCESS",0dh,0ah,0
@@ -251,23 +256,82 @@ handle_send_message PROC USES eax client:ptr Client,@bufAddr:ptr BYTE
 	ret
 handle_send_message ENDP
 
+; 随机生成10位图片文件名
+generateRandomImageName PROC buf:ptr BYTE
+	local count:sdword
+	mov count,10
+
+	invoke time,NULL
+	invoke srand,eax
+		
+	.while count>=1
+		invoke rand
+		mov edx,0
+		mov ecx,26
+		div ecx
+		mov eax,edx
+		add eax,61h
+		
+		mov ecx,buf
+
+		mov edx,count
+		mov ebx,10
+		sub ebx,edx
+		mov [ecx+ebx],al
+
+		dec count
+	.endw
+	ret
+generateRandomImageName ENDP
+
 handle_send_image PROC USES eax client:ptr Client,@bufAddr:ptr BYTE
 	local commandType[BUF_SIZE]:byte
 	local receiverId:DWORD
+	local imageSize:DWORD
+	local imageName[BUF_SIZE]:byte
 	local imageBuf[BUF_SIZE]:byte
+	local hasReceivedSize:dword
+	local fileHandle:dword
+	local bytesWrite:dword
 
-	invoke sscanf,@bufAddr,addr sendImageArgsFormat,addr commandType,addr receiverId,addr imageBuf
+	invoke sscanf,@bufAddr,addr sendImageArgsFormat,addr commandType,addr receiverId,addr imageSize
+
+	invoke generateRandomImageName, addr imageName
+
+	invoke printf,addr debugStrFormat,addr imageName
 
 	GetClient
 	lea ebx,[eax].user.username
 	lea ecx,[eax].user.password
-	invoke printf,addr sendImageLogFormat,ebx,addr imageBuf,receiverId
+	invoke printf,addr sendImageLogFormat,ebx,addr imageName,imageSize,receiverId
+
+	;create image file
+	invoke CreateFile,addr imageName,GENERIC_WRITE,0,NULL,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,0
+	mov fileHandle,eax
+
+	; start recv image content
+	mov hasReceivedSize,0
+	mov eax,imageSize
+
+	.WHILE hasReceivedSize <= eax
+		GetClient
+		mov ebx,[eax].clientSocket
+		invoke recv,ebx,addr imageBuf,BUF_SIZE - 1,0
+
+		.if eax ==0 
+			invoke CloseHandle,fileHandle
+			.BREAK
+		.endif
+
+		add hasReceivedSize,eax
+		mov ebx,eax
+		invoke WriteFile,fileHandle,addr imageBuf,ebx,addr bytesWrite,NULL
+
+	.endw
 
 
 	GetClient
 	invoke send,[eax].clientSocket,addr successResponse,successResponseLen,0
-
-
 
 	assume eax:nothing
 
