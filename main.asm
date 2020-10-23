@@ -3,6 +3,12 @@
 option casemap:none
 
 ; 头文件及库
+;include ws2_32.inc
+;includelib ws2_32.lib
+;include masm32.inc
+;includelib masm32.lib
+;include wsock32.inc
+;include msvcrt.inc
 include       windows.inc
 include       user32.inc
 include       kernel32.inc
@@ -13,6 +19,7 @@ includelib    kernel32.lib
 include       comdlg32.inc
 includelib    comdlg32.lib
 
+include msvcrt.inc
 includelib      msvcrt.lib
 printf          PROTO C :ptr sbyte, :VARARG
 scanf           PROTO C :ptr sbyte, :VARARG
@@ -21,35 +28,18 @@ sprintf         PROTO C :ptr byte,:ptr sbyte,:VARARG
 srand           PROTO C :dword
 rand            PROTO C
 time	        PROTO C :ptr dword
+fopen			PROTO C :DWORD, :DWORD
+fprintf         PROTO C :DWORD,:DWORD,:VARARG
+fflush          PROTO C :DWORD
+fscanf          PROTO C :DWORD,:DWORD,:VARARG
+fclose          PROTO C :DWORD
 
 ;常量定义
 BUF_SIZE = 4096
 
 
-; sqlite 相关函数原型定义
-; 打开数据库
-SQLITE_OPEN_PROTO  typedef proto :dword,:dword
-SQLITE_OPEN  typedef ptr   SQLITE_OPEN_PROTO
-
-; 关闭数据库
-SQLITE_CLOSE_PROTO typedef proto :dword
-SQLITE_CLOSE typedef ptr  SQLITE_CLOSE_PROTO
-
-; 执行sql语句
-SQLITE_EXEC_CALLBACK_PROTO  typedef proto :dword,:dword,:dword,:dword
-SQLITE_EXEC_CALLBACK  typedef ptr  SQLITE_EXEC_CALLBACK_PROTO
-
-; sql 执行回调
-SQLITE_EXEC_PROTO  typedef proto :dword,:dword,:SQLITE_EXEC_CALLBACK,:dword,:dword
-SQLITE_EXEC  typedef ptr   SQLITE_EXEC_PROTO
-
-SQLITE_LAST_INSERT_ROWID_PROTO typedef proto :dword
-SQLITE_LAST_INSERT_ROWID typedef ptr SQLITE_LAST_INSERT_ROWID_PROTO
-
-
 ; 数据结构定义
 User STRUCT
-	id	DWORD 0; 用户id
 	password BYTE 30 dup(0);用户密码 最长30个字节
 	username BYTE 30 dup(0);用户名 最长30个字节
 	avatar BYTE 120 dup(0);用户头像链接 最长120个字节
@@ -74,42 +64,20 @@ Client ENDS
 .const
 PORT DWORD 5000
 
-; sqlite 相关数据
 .data
-; 动态链接sqlite库地址
-sqlite_lib         DWORD 0
-; sqlite db地址
-hDB          DWORD 0
-sqlite_open       SQLITE_OPEN  ?
-sqlite_close      SQLITE_CLOSE ?
-sqlite_exec       SQLITE_EXEC ?
-sqlite_last_insert_rowid SQLITE_LAST_INSERT_ROWID ?
+; 数据库文件 users.db messages.db
+userDBName BYTE "users.db",0
+messageDBName BYTE "messages.db",0
+friendDBName BYTE "friends.db",0
+userDBMode BYTE "a+",0
+messageDBMode BYTE "a+",0
+friendDBMode BYTE "a+",0
+hUserDB DWORD ?
+hMessageDB DWORD ?
+hFriendDB DWORD ?
 
-; SQLITEite 常量
-libName BYTE "sqlite3.dll",0
-sqlite3_open  BYTE  "sqlite3_open",0
-sqlite3_close BYTE  "sqlite3_close",0
-sqlite3_exec  BYTE  "sqlite3_exec",0
-sqlite3_slct  BYTE  "sqlite3_get_table",0 
-sqlite3_last_insert_rowid BYTE "sqlite3_last_insert_rowid",0
-databaseFileName      BYTE  "data.sqlite",0  
-errorInfo     DWORD ?
-
-; create table SQLITE
-createUserTableSql  BYTE    "create table if not exists users(id integer primary key autoincrement,",
-							"username varchar(30),password varchar(30),avatar varchar(120));",0 
-createMessageTableSql BYTE   "create table if not exists messages(idiv integer primary key autoincrement,",
-								"time integer,sender_id integer,receiver_id integer,content_type integer,content varchar(200));",0
-
-; insert data SQLITE
-insertUserSql    BYTE    "insert into users(username,password) values(",22h,"%s",22h,",",22h,"%s",22h,");",0
-insertMessageSql BYTE    "insert into messages(sender_id,receiver_id,content_type,content) values(%d,%d,%d,",22h,"%s",22h,");",0
-
-; select data SQLITE
-verifyUserSql  BYTE "select username,password from users where username=",22h,"%s",22h," and password=",22h,"%s",22h,";",0
-getFriendsSql    BYTE "select id,username from users;",0
-getMessagesSql BYTE "select content_type,content from messages where sender_id = %d and receiver_id = %d;",0
-
+userDataFormat BYTE "%s %s",0dh,0ah,0
+friendDataFormat BYTE "%s %s",0dh,0ah,0
 
 ; WSAData init
 wsaData WSADATA <>
@@ -124,8 +92,9 @@ greetMsg BYTE "Starting Server...",0dh,0ah,0
 argsFormat BYTE "%s",0
 
 loginArgsFormat BYTE "%s %s %s",0
-sendTextArgsFormat BYTE "%s %d %s",0
-sendImageArgsFormat BYTE "%s %d %d",0
+registerArgsFormat BYTE "%s %s %s",0
+sendTextArgsFormat BYTE "%s %s %s",0
+sendImageArgsFormat BYTE "%s %s %d",0
 
 ; command constants
 REGISTER_COMMAND BYTE "REGISTER",0
@@ -139,10 +108,10 @@ GET_MESSAGES_COMMAND BYTE "MESSAGES",0
 debugFormat BYTE "DEBUG!!",0dh,0ah,0
 debugStrFormat BYTE "DEBUG %s",0dh,0ah,0
 debugNumFormat BYTE "DEBUG %d",0dh,0ah,0
-registerLogFormat BYTE "User %s(id:%d password:%s) register",0dh,0ah,0
-loginLogFormat BYTE "User %s(id:%d password:%s) login",0dh,0ah,0
-sendTextLogFormat BYTE "User %s send %s(text) to %d",0dh,0ah,0
-sendImageLogFormat BYTE "User %s send %s(image:%d) to %d",0dh,0ah,0
+registerLogFormat BYTE "User %s(password:%s) register",0dh,0ah,0
+loginLogFormat BYTE "User %s(password:%s) login",0dh,0ah,0
+sendTextLogFormat BYTE "User %s send %s(text) to %s",0dh,0ah,0
+sendImageLogFormat BYTE "User %s send %s(image:%d) to %s",0dh,0ah,0
 
 ; response message
 successResponse BYTE "SUCCESS",0dh,0ah,0
@@ -165,37 +134,42 @@ GetClient MACRO client:=<client>
 	assume eax:ptr Client
 ENDM
 
+GetDB MACRO 
+	INVOKE fopen,addr userDBName,addr userDBMode
+	mov hUserDB,eax
+	INVOKE fopen,addr messageDBName,addr messageDBMode
+	mov hMessageDB,eax
+	INVOKE fopen,addr friendDBName,addr friendDBMode
+	mov hFriendDB,eax
+ENDM
+
+CloseDB MACRO
+	invoke fflush,hUserDB
+	invoke fclose,hUserDB
+	invoke fflush,hFriendDB
+	invoke fclose,hFriendDB
+	invoke fflush,hMessageDB
+	invoke fclose,hMessageDB
+ENDM
+
+BZero MACRO buf:=<buf>,bufSize:=<BUF_SIZE>
+	INVOKE RtlZeroMemory,addr buf,bufSize
+ENDM
+
+
 .code
-init_db PROC
-	push ebp
-	mov ebp,esp
-
-	invoke   LoadLibrary,offset libName
-	mov      sqlite_lib,eax
-	invoke   GetProcAddress,sqlite_lib,addr sqlite3_open
-	mov		 sqlite_open,eax
-	invoke   GetProcAddress,sqlite_lib,addr sqlite3_close
-	mov      sqlite_close,eax
-	invoke   GetProcAddress,sqlite_lib,addr sqlite3_exec
-	mov		 sqlite_exec,eax
-	invoke   GetProcAddress,sqlite_lib,addr sqlite3_last_insert_rowid
-	mov      sqlite_last_insert_rowid,eax
-
-	invoke   sqlite_open,offset databaseFileName,offset hDB
-	invoke   sqlite_exec,hDB,addr createUserTableSql,NULL,NULL,offset errorInfo
-	invoke   sqlite_exec,hDB,addr createMessageTableSql,NULL,NULL,offset errorInfo
 
 
-	leave
-	ret
-init_db ENDP
-
-getClientById PROC receiverId:DWORD
+getClientByUserName PROC receiverNameAddr:DWORD
 	mov eax,offset clients
 	assume eax:ptr Client
 	.WHILE TRUE
-		mov ebx,[eax].user.id
-		.if ebx == receiverId 
+		lea ebx,[eax].user.username
+		push eax
+		invoke lstrcmp,ebx,receiverNameAddr
+		mov ecx,eax
+		pop eax
+		.if ecx==0
 			assume eax:nothing
 			.BREAK
 		.else
@@ -203,19 +177,39 @@ getClientById PROC receiverId:DWORD
 		.endif
 	.ENDW
 	ret
-getClientById ENDP
+getClientByUserName ENDP
 
-verifyUserCallback PROC param:ptr DWORD,count:DWORD,columnValue:ptr BYTE,columnName:ptr BYTE
-	mov eax,0
-	ret 
-verifyUserCallback   ENDP
+verifyUser PROC usernameAddr:ptr BYTE,passwordAddr:ptr BYTE
+	local username[BUF_SIZE]:BYTE
+	local password[BUF_SIZE]:BYTE
+	
+	BZero username
+	BZero password
+
+	GetDB
+	.WHILE TRUE
+		invoke fscanf,hUserDB,addr userDataFormat,addr username,addr password
+		.if eax <=0
+			mov eax,-1
+			.break
+		.endif
+		invoke lstrcmp,addr username,usernameAddr
+		.if eax == 0
+			invoke lstrcmp,addr password,passwordAddr
+			.if eax== 0
+				mov eax,0
+				.break
+			.ENDIF
+		.endif
+	.ENDW
+	CloseDB
+	ret
+verifyUser ENDP
+
 
 handle_login PROC client:ptr Client,@bufAddr:ptr BYTE 
 	local commandType[BUF_SIZE]:byte
 	local isVerified:dword
-	local sqlBuf[BUF_SIZE]:byte
-
-	mov isVerified,0
 
 	GetClient
 	lea ebx,[eax].user.username
@@ -225,22 +219,16 @@ handle_login PROC client:ptr Client,@bufAddr:ptr BYTE
 	GetClient
 	lea ebx,[eax].user.username
 	lea ecx,[eax].user.password
-	invoke sprintf,addr sqlBuf,addr verifyUserSql,ebx,ecx
+	invoke verifyUser,ebx,ecx
+	mov isVerified,eax
 
-	invoke printf,addr debugStrFormat,addr sqlBuf
+	invoke printf,addr debugFormat
 
-	invoke sqlite_exec,hDB,addr sqlBuf,addr verifyUserCallback,addr isVerified,offset errorInfo
-
-	.if eax!=0
-		invoke printf,addr debugStrFormat,errorInfo
-	.endif
-
-	.if isVerified == 1
+	.if isVerified == 0
 		GetClient
 		lea ebx,[eax].user.username
 		lea ecx,[eax].user.password
-		mov edx,[eax].user.id
-		invoke printf,addr loginLogFormat,ebx,edx,ecx
+		invoke printf,addr loginLogFormat,ebx,ecx
 
 		GetClient
 		invoke send,[eax].clientSocket,addr successResponse,successResponseLen,0
@@ -253,38 +241,32 @@ handle_login PROC client:ptr Client,@bufAddr:ptr BYTE
 	ret
 handle_login ENDP
 
+insert_user PROC usernameAddr:ptr BYTE,passwordAddr:ptr BYTE
+	GetDB
+	invoke fprintf,hUserDB,addr userDataFormat,usernameAddr,passwordAddr
+	CloseDB
+	ret
+insert_user ENDP
+
 handle_register PROC client:ptr Client,@bufAddr:ptr BYTE 
 	local commandType[BUF_SIZE]:byte
-	local sqlBuf[BUF_SIZE]:byte
 
 	GetClient
 	lea ebx,[eax].user.username
 	lea ecx,[eax].user.password
-	invoke sscanf,@bufAddr,addr loginArgsFormat,addr commandType,ebx,ecx
+	invoke sscanf,@bufAddr,addr registerArgsFormat,addr commandType,ebx,ecx
 
 	; insert user to database
 	GetClient
 	lea ebx,[eax].user.username
 	lea ecx,[eax].user.password
-	invoke sprintf,addr sqlBuf,addr insertUserSql,ebx,ecx
+	INVOKE insert_user,ebx,ecx
 
-	invoke printf,addr debugStrFormat,addr sqlBuf
-
-	invoke sqlite_exec,hDB,addr sqlBuf,NULL,NULL,addr errorInfo
-	.if eax!=0
-		invoke printf,addr debugStrFormat,errorInfo
-	.endif
-
-	invoke sqlite_last_insert_rowid,hDB
-	mov ebx,eax
-	GetClient
-	mov [eax].user.id,ebx
 
 	GetClient
 	lea ebx,[eax].user.username
 	lea ecx,[eax].user.password
-	mov edx,[eax].user.id
-	invoke printf,addr registerLogFormat,ebx,edx,ecx
+	invoke printf,addr registerLogFormat,ebx,ecx
 
 	GetClient
 	invoke send,[eax].clientSocket,addr successResponse,successResponseLen,0
@@ -293,8 +275,36 @@ handle_register PROC client:ptr Client,@bufAddr:ptr BYTE
 	ret
 handle_register ENDP
 
-handle_get_friends PROC client:ptr Client,@bufAddr:ptr BYTE 
+get_friends PROC usernameAddr:ptr BYTE
+	local user1Name[BUF_SIZE]:BYTE
+	local user2Name[BUF_SIZE]:BYTE
+	local buf[BUF_SIZE]:BYTE
 	
+	GetDB
+	.WHILE TRUE
+		invoke fscanf,hFriendDB,addr friendDataFormat,addr user1Name,addr user2Name
+		.if eax <=0
+			mov eax,-1
+			.break
+		.endif
+		invoke lstrcmp,addr username,usernameAddr
+		.if eax == 0
+			invoke lstrcmp,addr password,passwordAddr
+			.if eax== 0
+				mov eax,0
+				.break
+			.ENDIF
+		.endif
+	.ENDW
+	CloseDB
+
+get_friends ENDP
+
+handle_get_friends PROC client:ptr Client,@bufAddr:ptr BYTE 
+	GetClient
+	lea ebx,[eax].user.username
+	INVOKE get_friends,ebx
+
 	ret
 handle_get_friends ENDP
 
@@ -304,23 +314,23 @@ handle_get_messages ENDP
 
 handle_send_message PROC USES eax client:ptr Client,@bufAddr:ptr BYTE
 	local commandType[BUF_SIZE]:byte
-	local receiverId:DWORD
+	local receiverName:DWORD
 	local message[BUF_SIZE]:byte
 	local receiver:ptr Clinet
 	local receiverBuf[BUF_SIZE]:byte
 
-	invoke sscanf,@bufAddr,addr sendTextArgsFormat,addr commandType,addr receiverId,addr message
+	invoke sscanf,@bufAddr,addr sendTextArgsFormat,addr commandType,addr receiverName,addr message
 
 	GetClient
 	lea ebx,[eax].user.username
 	lea ecx,[eax].user.password
-	invoke printf,addr sendTextLogFormat,ebx,addr message,receiverId
+	invoke printf,addr sendTextLogFormat,ebx,addr message,addr receiverName
 
 
 	GetClient
 	invoke send,[eax].clientSocket,addr successResponse,successResponseLen,0
 
-	invoke getClientById,receiverId
+	invoke getClientByUserName,addr receiverName
 	mov receiver,eax
 
 	invoke sprintf,addr receiverBuf,addr textResponseFormat,addr message
@@ -368,15 +378,16 @@ generateRandomImageName ENDP
 
 handle_send_image PROC USES eax client:ptr Client,@bufAddr:ptr BYTE
 	local commandType[BUF_SIZE]:byte
-	local receiverId:DWORD
+	local receiverName:DWORD
 	local imageSize:DWORD
 	local imageName[BUF_SIZE]:byte
 	local imageBuf[BUF_SIZE]:byte
 	local hasReceivedSize:dword
 	local fileHandle:dword
 	local bytesWrite:dword
+	
 
-	invoke sscanf,@bufAddr,addr sendImageArgsFormat,addr commandType,addr receiverId,addr imageSize
+	invoke sscanf,@bufAddr,addr sendImageArgsFormat,addr commandType,addr receiverName,addr imageSize
 
 	invoke generateRandomImageName, addr imageName
 
@@ -385,7 +396,7 @@ handle_send_image PROC USES eax client:ptr Client,@bufAddr:ptr BYTE
 	GetClient
 	lea ebx,[eax].user.username
 	lea ecx,[eax].user.password
-	invoke printf,addr sendImageLogFormat,ebx,addr imageName,imageSize,receiverId
+	invoke printf,addr sendImageLogFormat,ebx,addr imageName,imageSize,addr receiverName
 
 	;create image file
 	invoke CreateFile,addr imageName,GENERIC_WRITE,0,NULL,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,0
@@ -448,9 +459,9 @@ handle_request PROC clientSocket:DWORD
 	;invoke RtlZeroMemory,addr client,sizeof client
 
 	.WHILE TRUE
-
-		invoke RtlZeroMemory,addr @buf,BUF_SIZE
-		invoke RtlZeroMemory,addr commandType,BUF_SIZE
+		
+		BZero @buf
+		BZero commandType
 
 		GetClient
 		mov ebx,[eax].clientSocket
@@ -546,7 +557,6 @@ init_server PROC
 init_server ENDP
 
 main PROC
-	invoke init_db
 	INVOKE GetProcessHeap
 	mov hHeap,eax
 	invoke init_server
