@@ -118,7 +118,7 @@ createFriendTableSql BYTE "create table if not exists friends(id integer primary
 ; insert data SQLITE
 insertUserSql    BYTE    "insert into users(username,password) values(",22h,"%s",22h,",",22h,"%s",22h,");",0
 insertFriendSql   BYTE   "insert into friends(friend1_id,friend2_id) values(%d,%d);",0
-insertMessageSql BYTE    "insert into messages(sender_id,receiver_id,content_type,content,is_read) values(%d,%d,%d,",22h,"%s",22h,"%d);",0
+insertMessageSql BYTE    "insert into messages(sender_id,receiver_id,content_type,content,is_read) values(%d,%d,%d,",22h,"%s",22h,",%d);",0
 
 ; select data SQLITE
 verifyUserSql  BYTE "select id,username,password from users where username=",22h,"%s",22h," and password=",22h,"%s",22h,";",0
@@ -128,6 +128,8 @@ getLastMessagesSql BYTE "select content_type,content from messages where sender_
 getUserSql BYTE "select username from users where id=%d",0
 getUsersSql BYTE "select id,username from users",0
 
+; update data SQLITE
+updateIsReadSql BYTE "update messages set is_read = 1 where sender_id = %d and receiver_id = %d;",0
 
 ; WSAData init
 wsaData WSADATA <>
@@ -517,8 +519,11 @@ handle_get_friends PROC client:ptr Client,@bufAddr:ptr BYTE
 		pop ecx
 		inc ecx
 	.ENDW
+	.if row>=1
+		invoke sqlite_free_table,result2
+	.endif
+
 	invoke sqlite_free_table,result
-	invoke sqlite_free_table,result2
 	ret
 
 handle_get_friends ENDP
@@ -537,10 +542,6 @@ get_messages PROC client:ptr Client,senderId:DWORD,receiverId:DWORD
 	local imageBuf[BUF_SIZE]:DWORD
 	local bytesRead:DWORD
 
-	
-	invoke printf,addr debugNumFormat,receiverId
-	invoke printf,addr debugNumFormat,senderId
-	invoke printf,addr debugFormat
 
 	BZero sqlBuf
 	BZero responseBuf
@@ -581,12 +582,23 @@ get_messages PROC client:ptr Client,senderId:DWORD,receiverId:DWORD
 		.if content_type == 1
 			BZero responseBuf
 			invoke sprintf,addr responseBuf,addr textResponseFormat,addr content
-			
+
+			invoke lstrlen,addr responseBuf
+			mov ecx,eax
+
+			GetClient
+			mov ebx,[eax].clientSocket
+			invoke send,ebx,addr responseBuf,ecx,0
+
+			invoke printf,addr debugStrFormat,addr responseBuf
+
 		.else
+			invoke printf,addr debugStrFormat,addr content
 			invoke CreateFile,addr content,GENERIC_READ,0,NULL,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,0
 			mov fileHandle,eax
 
-			invoke GetFileSizeEx,fileHandle,addr imageSize
+			invoke GetFileSize,fileHandle,addr imageSize
+			mov imageSize,eax
 
 			BZero responseBuf
 			invoke sprintf,addr responseBuf,addr imageResponseFormat,imageSize
@@ -597,10 +609,17 @@ get_messages PROC client:ptr Client,senderId:DWORD,receiverId:DWORD
 			GetClient
 			mov ecx,[eax].clientSocket
 			invoke send,ecx,addr responseBuf,ebx,0
+			invoke printf,addr debugStrFormat,addr responseBuf
+
 
 			.WHILE TRUE
 				BZero imageBuf
 				invoke ReadFile,fileHandle,addr imageBuf,BUF_SIZE-1,addr bytesRead,NULL
+
+				.if eax==0
+					invoke GetLastError
+					invoke printf,addr debugNumFormat,eax
+				.endif
 
 				GetClient
 				mov ebx,[eax].clientSocket
@@ -642,6 +661,7 @@ get_last_messages PROC client:ptr Client,senderId:DWORD,receiverId:DWORD
 	BZero responseBuf
 
 	invoke sprintf,addr sqlBuf,addr getLastMessagesSql,senderId,receiverId
+	invoke printf,addr debugStrFormat,addr sqlBuf
 
 	invoke sqlite_slct,hDB,addr sqlBuf,addr result,addr row,addr column,offset errorInfo
 
@@ -675,11 +695,18 @@ get_last_messages PROC client:ptr Client,senderId:DWORD,receiverId:DWORD
 			BZero responseBuf
 			invoke sprintf,addr responseBuf,addr textResponseFormat,addr content
 			
+			invoke lstrlen,addr responseBuf
+			mov ecx,eax
+
+			GetClient
+			mov ebx,[eax].clientSocket
+			invoke send,ebx,addr responseBuf,ecx,0
 		.else
 			invoke CreateFile,addr content,GENERIC_READ,0,NULL,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,0
 			mov fileHandle,eax
 
-			invoke GetFileSizeEx,fileHandle,addr imageSize
+			invoke GetFileSize,fileHandle,addr imageSize
+			mov imageSize,eax
 
 			BZero responseBuf
 			invoke sprintf,addr responseBuf,addr imageResponseFormat,imageSize
@@ -714,6 +741,13 @@ get_last_messages PROC client:ptr Client,senderId:DWORD,receiverId:DWORD
 		inc ecx
 	.ENDW
 	invoke sqlite_free_table,result
+
+	BZero sqlBuf
+	invoke sprintf,addr sqlBuf,addr updateIsReadSql,senderId,receiverId
+	invoke printf,addr debugStrFormat,addr sqlBuf
+
+	invoke sqlite_exec,hDB,addr sqlBuf,NULL,NULL,offset errorInfo
+
 	ret
 get_last_messages ENDP
 
@@ -732,7 +766,6 @@ handle_get_messages PROC client:ptr Client,@bufAddr:ptr BYTE
 	invoke sscanf,@bufAddr,addr getMessagesArgsFormat,addr commandType,addr receiverId
 
 	invoke printf,addr debugStrFormat,addr commandType
-	invoke printf,addr debugNumFormat,receiverId
 
 	GetClient
 	mov ebx,[eax].user.id
@@ -750,7 +783,7 @@ handle_get_last_messages PROC client:ptr Client,@bufAddr:ptr BYTE
 
 	BZero commandType
 
-	invoke sscanf,@bufAddr,addr commandType,addr receiverId
+	invoke sscanf,@bufAddr,addr getMessagesArgsFormat,addr commandType,addr receiverId
 
 	GetClient
 	mov ebx,[eax].user.id
