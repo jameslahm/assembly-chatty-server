@@ -23,7 +23,7 @@ rand            PROTO C
 time	        PROTO C :ptr dword
 
 ;常量定义
-BUF_SIZE = 4096
+BUF_SIZE = 409
 
 
 ; sqlite 相关函数原型定义
@@ -80,6 +80,8 @@ Client ENDS
 .const
 PORT DWORD 5000
 
+;content_type 1 - TEXT 2 - IMAGE
+
 ; sqlite 相关数据
 .data
 ; 动态链接sqlite库地址
@@ -108,7 +110,7 @@ errorInfo     DWORD ?
 createUserTableSql  BYTE    "create table if not exists users(id integer primary key autoincrement,",
 							"username varchar(30),password varchar(30),avatar varchar(120));",0 
 createMessageTableSql BYTE   "create table if not exists messages(id integer primary key autoincrement,",
-								"time integer,sender_id integer,receiver_id integer,content_type integer,content varchar(200));",0
+								"is_read integer,sender_id integer,receiver_id integer,content_type integer,content varchar(200));",0
 
 createFriendTableSql BYTE "create table if not exists friends(id integer primary key autoincrement,",
 								"friend1_id integer,friend2_id integer);",0
@@ -116,12 +118,13 @@ createFriendTableSql BYTE "create table if not exists friends(id integer primary
 ; insert data SQLITE
 insertUserSql    BYTE    "insert into users(username,password) values(",22h,"%s",22h,",",22h,"%s",22h,");",0
 insertFriendSql   BYTE   "insert into friends(friend1_id,friend2_id) values(%d,%d);",0
-insertMessageSql BYTE    "insert into messages(sender_id,receiver_id,content_type,content) values(%d,%d,%d,",22h,"%s",22h,");",0
+insertMessageSql BYTE    "insert into messages(sender_id,receiver_id,content_type,content,is_read) values(%d,%d,%d,",22h,"%s",22h,"%d);",0
 
 ; select data SQLITE
 verifyUserSql  BYTE "select id,username,password from users where username=",22h,"%s",22h," and password=",22h,"%s",22h,";",0
 getFriendsSql    BYTE "select friend1_id,friend2_id from friends where friend1_id = %d or friend2_id=%d",0
 getMessagesSql BYTE "select content_type,content from messages where sender_id = %d and receiver_id = %d;",0
+getLastMessagesSql BYTE "select content_type,content from messages where sender_id = %d and receiver_id = %d and is_read = 0;",0
 getUserSql BYTE "select username from users where id=%d",0
 getUsersSql BYTE "select id,username from users",0
 
@@ -142,6 +145,8 @@ loginArgsFormat BYTE "%s %s %s",0
 sendTextArgsFormat BYTE "%s %d %s",0
 sendImageArgsFormat BYTE "%s %d %d",0
 addFriendArgsFormat BYTE "%s %d",0
+getMessagesArgsFormat BYTE "%s %d",0
+getLastMessagesArgsFormat BYTE "%s %d",0
 
 ; command constants
 REGISTER_COMMAND BYTE "REGISTER",0
@@ -152,6 +157,7 @@ GET_FRIENDS_COMMAND BYTE "FRIENDS",0
 ADD_FRIEND_COMMAND BYTE "ADDFRIEND",0
 GET_MESSAGES_COMMAND BYTE "MESSAGES",0
 GET_USERS_COMMAND BYTE "USERS",0
+GET_LASTMESSAGES_COMMAND BYTE "LASTMESSAGES",0
 
 ; logs print format
 debugFormat BYTE "DEBUG!!",0dh,0ah,0
@@ -173,8 +179,9 @@ friendsResponseFormat BYTE "%d %s",0dh,0ah,0
 usersNumResponseFormat BYTE "USERS %d",0dh,0ah,0
 usersResponseFormat BYTE "%d %s",0dh,0ah,0
 
-textResponseFormat BYTE "TEXT %d %s",0dh,0ah,0
-imageResponseFormat BYTE "IMAGE %d %d",0dh,0ah,0
+messagesNumResponseFormat BYTE "MESSAGES %d",0dh,0ah,0
+textResponseFormat BYTE "TEXT %s",0dh,0ah,0
+imageResponseFormat BYTE "IMAGE %d",0dh,0ah,0
 
 ; all clients
 clients Client 50 dup(<>)
@@ -516,20 +523,256 @@ handle_get_friends PROC client:ptr Client,@bufAddr:ptr BYTE
 
 handle_get_friends ENDP
 
+get_messages PROC client:ptr Client,senderId:DWORD,receiverId:DWORD
+	local sqlBuf[BUF_SIZE]:BYTE
+	local row:DWORD
+	local column:DWORD
+	local result:DWORD
+	local index:DWORD
+	local content_type:DWORD
+	local responseBuf[BUF_SIZE]:BYTE
+	local content[BUF_SIZE]:BYTE
+	local fileHandle:DWORD
+	local imageSize:DWORD
+	local imageBuf[BUF_SIZE]:DWORD
+	local bytesRead:DWORD
+
+	
+	invoke printf,addr debugNumFormat,receiverId
+	invoke printf,addr debugNumFormat,senderId
+	invoke printf,addr debugFormat
+
+	BZero sqlBuf
+	BZero responseBuf
+
+	invoke sprintf,addr sqlBuf,addr getMessagesSql,senderId,receiverId
+
+	invoke printf,addr debugStrFormat,addr sqlBuf
+
+
+	invoke sqlite_slct,hDB,addr sqlBuf,addr result,addr row,addr column,offset errorInfo
+
+	invoke sprintf,addr responseBuf,addr messagesNumResponseFormat,row
+
+	invoke lstrlen,addr responseBuf
+	mov ebx,eax
+
+	GetClient
+	mov ecx,[eax].clientSocket
+	invoke send,ecx,addr responseBuf,ebx,0
+
+	push column
+	pop index
+	
+	mov ecx,1
+	.WHILE ecx <= row
+		push ecx
+		mov ebx,result
+		mov edx,index
+		mov ecx,[ebx+4*edx]
+		invoke sscanf,ecx,addr toNumFormat,addr content_type
+		
+		inc index
+		mov ebx,result
+		mov edx,index
+		mov ecx,[ebx+4*edx]
+		invoke sscanf,ecx,addr toStrFormat,addr content
+
+		.if content_type == 1
+			BZero responseBuf
+			invoke sprintf,addr responseBuf,addr textResponseFormat,addr content
+			
+		.else
+			invoke CreateFile,addr content,GENERIC_READ,0,NULL,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,0
+			mov fileHandle,eax
+
+			invoke GetFileSizeEx,fileHandle,addr imageSize
+
+			BZero responseBuf
+			invoke sprintf,addr responseBuf,addr imageResponseFormat,imageSize
+			
+			invoke lstrlen,addr responseBuf
+			mov ebx,eax
+
+			GetClient
+			mov ecx,[eax].clientSocket
+			invoke send,ecx,addr responseBuf,ebx,0
+
+			.WHILE TRUE
+				BZero imageBuf
+				invoke ReadFile,fileHandle,addr imageBuf,BUF_SIZE-1,addr bytesRead,NULL
+
+				GetClient
+				mov ebx,[eax].clientSocket
+				invoke send,ebx,addr imageBuf,bytesRead,0
+
+				mov eax,bytesRead
+				.if eax < BUF_SIZE -1
+					.BREAK
+				.endif
+			.ENDW
+
+			invoke CloseHandle,fileHandle
+
+		.endif
+
+		inc index
+		pop ecx
+		inc ecx
+	.ENDW
+	invoke sqlite_free_table,result
+	ret
+get_messages ENDP
+
+get_last_messages PROC client:ptr Client,senderId:DWORD,receiverId:DWORD
+	local sqlBuf[BUF_SIZE]:BYTE
+	local row:DWORD
+	local column:DWORD
+	local result:DWORD
+	local index:DWORD
+	local content_type:DWORD
+	local responseBuf[BUF_SIZE]:BYTE
+	local content[BUF_SIZE]:BYTE
+	local fileHandle:DWORD
+	local imageSize:DWORD
+	local imageBuf[BUF_SIZE]:DWORD
+	local bytesRead:DWORD
+
+	BZero sqlBuf
+	BZero responseBuf
+
+	invoke sprintf,addr sqlBuf,addr getLastMessagesSql,senderId,receiverId
+
+	invoke sqlite_slct,hDB,addr sqlBuf,addr result,addr row,addr column,offset errorInfo
+
+	invoke sprintf,addr responseBuf,addr messagesNumResponseFormat,row
+
+	invoke lstrlen,addr responseBuf
+	mov ebx,eax
+
+	GetClient
+	mov ecx,[eax].clientSocket
+	invoke send,ecx,addr responseBuf,ebx,0
+
+	push column
+	pop index
+	
+	mov ecx,1
+	.WHILE ecx <= row
+		push ecx
+		mov ebx,result
+		mov edx,index
+		mov ecx,[ebx+4*edx]
+		invoke sscanf,ecx,addr toNumFormat,addr content_type
+		
+		inc index
+		mov ebx,result
+		mov edx,index
+		mov ecx,[ebx+4*edx]
+		invoke sscanf,ecx,addr toStrFormat,addr content
+
+		.if content_type == 1
+			BZero responseBuf
+			invoke sprintf,addr responseBuf,addr textResponseFormat,addr content
+			
+		.else
+			invoke CreateFile,addr content,GENERIC_READ,0,NULL,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,0
+			mov fileHandle,eax
+
+			invoke GetFileSizeEx,fileHandle,addr imageSize
+
+			BZero responseBuf
+			invoke sprintf,addr responseBuf,addr imageResponseFormat,imageSize
+			
+			invoke lstrlen,addr responseBuf
+			mov ebx,eax
+
+			GetClient
+			mov ecx,[eax].clientSocket
+			invoke send,ecx,addr responseBuf,ebx,0
+
+			.WHILE TRUE
+				BZero imageBuf
+				invoke ReadFile,fileHandle,addr imageBuf,BUF_SIZE-1,addr bytesRead,NULL
+
+				GetClient
+				mov ebx,[eax].clientSocket
+				invoke send,ebx,addr imageBuf,bytesRead,0
+
+				mov eax,bytesRead
+				.if eax < BUF_SIZE -1
+					.BREAK
+				.endif
+			.ENDW
+
+			invoke CloseHandle,fileHandle
+
+		.endif
+
+		inc index
+		pop ecx
+		inc ecx
+	.ENDW
+	invoke sqlite_free_table,result
+	ret
+get_last_messages ENDP
+
+get_messages_fake PROC client:ptr Client,senderId:DWORD,receiverId:DWORD
+	invoke printf,addr debugNumFormat,senderId
+	invoke printf,addr debugNumFormat,receiverId
+	ret
+get_messages_fake ENDP
+
 handle_get_messages PROC client:ptr Client,@bufAddr:ptr BYTE 
+	local receiverId:DWORD
+	local commandType[BUF_SIZE]:BYTE
+
+	BZero commandType
+
+	invoke sscanf,@bufAddr,addr getMessagesArgsFormat,addr commandType,addr receiverId
+
+	invoke printf,addr debugStrFormat,addr commandType
+	invoke printf,addr debugNumFormat,receiverId
+
+	GetClient
+	mov ebx,[eax].user.id
+	invoke get_messages,client,ebx,receiverId
+
+	GetClient
+	mov ebx,[eax].user.id
+	invoke get_messages,client,receiverId,ebx
 	ret
 handle_get_messages ENDP
+
+handle_get_last_messages PROC client:ptr Client,@bufAddr:ptr BYTE
+	local receiverId:DWORD
+	local commandType[BUF_SIZE]:BYTE
+
+	BZero commandType
+
+	invoke sscanf,@bufAddr,addr commandType,addr receiverId
+
+	GetClient
+	mov ebx,[eax].user.id
+	invoke get_last_messages,client,receiverId,ebx
+
+	ret
+handle_get_last_messages ENDP
 
 handle_send_message PROC USES eax client:ptr Client,@bufAddr:ptr BYTE
 	local commandType[BUF_SIZE]:byte
 	local receiverId:DWORD
 	local message[BUF_SIZE]:byte
-	local receiver:ptr Clinet
-	local receiverBuf[BUF_SIZE]:byte
+	local sqlBuf[BUF_SIZE]:BYTE
+	local contentType:DWORD
+	local isRead:DWORD
 
+	BZero sqlBuf
 	BZero commandType
 	BZero message
-	BZero receiverBuf
+
+	mov contentType,1
+	mov isRead,0
 
 	invoke sscanf,@bufAddr,addr sendTextArgsFormat,addr commandType,addr receiverId,addr message
 
@@ -542,20 +785,13 @@ handle_send_message PROC USES eax client:ptr Client,@bufAddr:ptr BYTE
 	GetClient
 	invoke send,[eax].clientSocket,addr successResponse,successResponseLen,0
 
-	invoke getClientById,receiverId
-	mov receiver,eax
-
 	GetClient
 	mov ebx,[eax].user.id
-	invoke sprintf,addr receiverBuf,addr textResponseFormat,ebx,addr message
+	invoke sprintf,addr sqlBuf,addr insertMessageSql,ebx,receiverId,contentType,addr message,isRead
 
-	invoke lstrlen,addr receiverBuf
-	mov ecx,eax
+	invoke printf,addr debugStrFormat,addr sqlBuf
 
-	GetClient receiver
-	mov ebx,[eax].clientSocket
-	invoke send,ebx,addr receiverBuf,ecx,0
-	
+	invoke sqlite_exec,hDB,addr sqlBuf,NULL,NULL,addr errorInfo
 
 	assume eax:nothing
 
@@ -599,14 +835,16 @@ handle_send_image PROC USES eax client:ptr Client,@bufAddr:ptr BYTE
 	local hasReceivedSize:dword
 	local fileHandle:dword
 	local bytesWrite:dword
-	local receiverBuf[BUF_SIZE]:byte
-	local bytesRead:dword
-	local receiver:ptr Clinet
+	local sqlBuf[BUF_SIZE]:DWORD
+	local contentType:DWORD
+	local isRead:DWORD
 
 	BZero commandType
 	BZero imageName
 	BZero imageBuf
-	BZero receiverBuf
+
+	mov contentType,2
+	mov isRead,0
 
 	invoke sscanf,@bufAddr,addr sendImageArgsFormat,addr commandType,addr receiverId,addr imageSize
 
@@ -645,38 +883,11 @@ handle_send_image PROC USES eax client:ptr Client,@bufAddr:ptr BYTE
 
 	assume eax:nothing
 
-	invoke getClientById,receiverId
-	mov receiver,eax
-
 	GetClient
 	mov ebx,[eax].user.id
-	invoke sprintf,addr receiverBuf,addr imageResponseFormat,ebx,imageSize
+	invoke sprintf,addr sqlBuf,addr insertMessageSql,ebx,receiverId,contentType,addr imageName,isRead
 
-	invoke lstrlen,addr receiverBuf
-	mov ecx,eax
-
-	GetClient receiver
-	mov ebx,[eax].clientSocket
-	invoke send,ebx,addr receiverBuf,ecx,0
-	
-	invoke CreateFile,addr imageName,GENERIC_READ,0,NULL,OPEN_EXISTING,FILE_ATTRIBUTE_NORMAL,0
-	mov fileHandle,eax
-
-	.WHILE TRUE
-		BZero imageBuf
-		invoke ReadFile,fileHandle,addr imageBuf,BUF_SIZE-1,addr bytesRead,NULL
-
-		GetClient receiver
-		mov ebx,[eax].clientSocket
-		invoke send,ebx,addr imageBuf,bytesRead,0
-
-		mov eax,bytesRead
-		.if eax < BUF_SIZE -1
-			.BREAK
-		.endif
-	.ENDW
-
-	invoke CloseHandle,fileHandle
+	invoke sqlite_exec,hDB,addr sqlBuf,NULL,NULL,addr errorInfo
 	ret
 
 handle_send_image ENDP
@@ -772,6 +983,11 @@ handle_request PROC clientSocket:DWORD
 		invoke lstrcmp,addr GET_USERS_COMMAND,addr commandType
 		.if eax==0
 			invoke handle_get_users,client,addr @buf
+		.endif
+
+		invoke lstrcmp,addr GET_LASTMESSAGES_COMMAND,addr commandType
+		.if eax==0
+			invoke handle_get_last_messages,client,addr @buf
 		.endif
 
 	.ENDW
