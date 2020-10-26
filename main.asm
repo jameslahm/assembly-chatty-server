@@ -454,6 +454,8 @@ handle_get_friends PROC client:ptr Client,@bufAddr:ptr BYTE
 	local friendsNumResponseBuf[BUF_SIZE]:BYTE
 	local friendsResponseBuf[BUF_SIZE]:BYTE
 
+	local count:DWORD
+
 	BZero sqlBuf
 	BZero sqlBuf2
 	BZero friendsNumResponseBuf
@@ -463,6 +465,7 @@ handle_get_friends PROC client:ptr Client,@bufAddr:ptr BYTE
 	mov ebx,[eax].user.id
 	invoke sprintf,addr sqlBuf,addr getFriendsSql,ebx,ebx
 
+	invoke printf,addr debugStrFormat,addr sqlBuf
 	invoke sqlite_slct,hDB,addr sqlBuf,addr result,addr row,addr column,offset errorInfo
 
 
@@ -478,9 +481,9 @@ handle_get_friends PROC client:ptr Client,@bufAddr:ptr BYTE
 	push column
 	pop index
 	
-	mov ecx,1
+	mov count,1
+	mov ecx,count
 	.WHILE ecx <= row
-		push ecx
 		mov ebx,result
 		mov edx,index
 		mov ecx,[ebx+4*edx]
@@ -516,9 +519,10 @@ handle_get_friends PROC client:ptr Client,@bufAddr:ptr BYTE
 		invoke send ,ecx,addr friendsResponseBuf,ebx,0
 
 		inc index
-		pop ecx
-		inc ecx
+		inc count
+		mov ecx,count
 	.ENDW
+
 	.if row>=1
 		invoke sqlite_free_table,result2
 	.endif
@@ -640,6 +644,13 @@ get_messages PROC client:ptr Client,senderId:DWORD,receiverId:DWORD
 		inc ecx
 	.ENDW
 	invoke sqlite_free_table,result
+
+	BZero sqlBuf
+	invoke sprintf,addr sqlBuf,addr updateIsReadSql,senderId,receiverId
+	invoke printf,addr debugStrFormat,addr sqlBuf
+
+	invoke sqlite_exec,hDB,addr sqlBuf,NULL,NULL,offset errorInfo
+
 	ret
 get_messages ENDP
 
@@ -900,9 +911,15 @@ handle_send_image PROC USES eax client:ptr Client,@bufAddr:ptr BYTE
 
 	.WHILE hasReceivedSize < eax
 		push eax
+		mov ebx,hasReceivedSize
+		mov ecx,eax
+		sub ecx,ebx
+		.if ecx > BUF_SIZE - 1
+			mov ecx,BUF_SIZE -1
+		.endif
 		GetClient
 		mov ebx,[eax].clientSocket
-		invoke recv,ebx,addr imageBuf,BUF_SIZE - 1,0
+		invoke recv,ebx,addr imageBuf,ecx,0
 		add hasReceivedSize,eax
 		mov ebx,eax
 		invoke WriteFile,fileHandle,addr imageBuf,ebx,addr bytesWrite,NULL
