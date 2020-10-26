@@ -123,13 +123,13 @@ insertMessageSql BYTE    "insert into messages(sender_id,receiver_id,content_typ
 ; select data SQLITE
 verifyUserSql  BYTE "select id,username,password from users where username=",22h,"%s",22h," and password=",22h,"%s",22h,";",0
 getFriendsSql    BYTE "select friend1_id,friend2_id from friends where friend1_id = %d or friend2_id=%d",0
-getMessagesSql BYTE "select content_type,content from messages where sender_id = %d and receiver_id = %d;",0
+getMessagesSql BYTE "select sender_id,content_type,content from messages where sender_id = %d and receiver_id = %d or sender_id=%d and receiver_id = %d;",0
 getLastMessagesSql BYTE "select content_type,content from messages where sender_id = %d and receiver_id = %d and is_read = 0;",0
 getUserSql BYTE "select username from users where id=%d",0
 getUsersSql BYTE "select id,username from users",0
 
 ; update data SQLITE
-updateIsReadSql BYTE "update messages set is_read = 1 where sender_id = %d and receiver_id = %d;",0
+updateIsReadSql BYTE "update messages set is_read = 1 where sender_id = %d and receiver_id = %d ;",0
 
 ; WSAData init
 wsaData WSADATA <>
@@ -182,8 +182,8 @@ usersNumResponseFormat BYTE "USERS %d",0dh,0ah,0
 usersResponseFormat BYTE "%d %s",0dh,0ah,0
 
 messagesNumResponseFormat BYTE "MESSAGES %d",0dh,0ah,0
-textResponseFormat BYTE "TEXT %s",0dh,0ah,0
-imageResponseFormat BYTE "IMAGE %d",0dh,0ah,0
+textResponseFormat BYTE "TEXT %d %s",0dh,0ah,0
+imageResponseFormat BYTE "IMAGE %d %d",0dh,0ah,0
 
 ; all clients
 clients Client 50 dup(<>)
@@ -453,6 +453,7 @@ handle_get_friends PROC client:ptr Client,@bufAddr:ptr BYTE
 	local result2:DWORD
 	local friendsNumResponseBuf[BUF_SIZE]:BYTE
 	local friendsResponseBuf[BUF_SIZE]:BYTE
+	local count:DWORD
 
 	BZero sqlBuf
 	BZero sqlBuf2
@@ -462,6 +463,8 @@ handle_get_friends PROC client:ptr Client,@bufAddr:ptr BYTE
 	GetClient
 	mov ebx,[eax].user.id
 	invoke sprintf,addr sqlBuf,addr getFriendsSql,ebx,ebx
+
+	invoke printf,addr debugStrFormat,addr sqlBuf
 
 	invoke sqlite_slct,hDB,addr sqlBuf,addr result,addr row,addr column,offset errorInfo
 
@@ -478,9 +481,9 @@ handle_get_friends PROC client:ptr Client,@bufAddr:ptr BYTE
 	push column
 	pop index
 	
-	mov ecx,1
+	mov count,1
+	mov ecx,count
 	.WHILE ecx <= row
-		push ecx
 		mov ebx,result
 		mov edx,index
 		mov ecx,[ebx+4*edx]
@@ -501,6 +504,8 @@ handle_get_friends PROC client:ptr Client,@bufAddr:ptr BYTE
 
 		invoke sprintf,addr sqlBuf2,addr getUserSql,tmpId
 
+		invoke printf,addr debugStrFormat,addr sqlBuf2
+
 		invoke sqlite_slct,hDB,addr sqlBuf2,addr result2,addr row2,addr column2,offset errorInfo
 		
 		mov ebx,result2
@@ -516,8 +521,8 @@ handle_get_friends PROC client:ptr Client,@bufAddr:ptr BYTE
 		invoke send ,ecx,addr friendsResponseBuf,ebx,0
 
 		inc index
-		pop ecx
-		inc ecx
+		inc count
+		mov ecx,count
 	.ENDW
 	.if row>=1
 		invoke sqlite_free_table,result2
@@ -541,12 +546,14 @@ get_messages PROC client:ptr Client,senderId:DWORD,receiverId:DWORD
 	local imageSize:DWORD
 	local imageBuf[BUF_SIZE]:DWORD
 	local bytesRead:DWORD
+	local isRecv:DWORD
+	local tmpSenderId:DWORD
 
 
 	BZero sqlBuf
 	BZero responseBuf
 
-	invoke sprintf,addr sqlBuf,addr getMessagesSql,senderId,receiverId
+	invoke sprintf,addr sqlBuf,addr getMessagesSql,senderId,receiverId,receiverId,senderId
 
 	invoke printf,addr debugStrFormat,addr sqlBuf
 
@@ -571,6 +578,19 @@ get_messages PROC client:ptr Client,senderId:DWORD,receiverId:DWORD
 		mov ebx,result
 		mov edx,index
 		mov ecx,[ebx+4*edx]
+		invoke sscanf,ecx,addr toNumFormat,addr tmpSenderId
+		
+		mov eax,tmpSenderId
+		.if eax == senderId
+			mov isRecv,0
+		.else
+			mov isRecv,1
+		.endif
+
+		inc index
+		mov ebx,result
+		mov edx,index
+		mov ecx,[ebx+4*edx]
 		invoke sscanf,ecx,addr toNumFormat,addr content_type
 		
 		inc index
@@ -581,7 +601,7 @@ get_messages PROC client:ptr Client,senderId:DWORD,receiverId:DWORD
 
 		.if content_type == 1
 			BZero responseBuf
-			invoke sprintf,addr responseBuf,addr textResponseFormat,addr content
+			invoke sprintf,addr responseBuf,addr textResponseFormat,isRecv,addr content
 
 			invoke lstrlen,addr responseBuf
 			mov ecx,eax
@@ -601,7 +621,7 @@ get_messages PROC client:ptr Client,senderId:DWORD,receiverId:DWORD
 			mov imageSize,eax
 
 			BZero responseBuf
-			invoke sprintf,addr responseBuf,addr imageResponseFormat,imageSize
+			invoke sprintf,addr responseBuf,addr imageResponseFormat,isRecv,imageSize
 			
 			invoke lstrlen,addr responseBuf
 			mov ebx,eax
@@ -640,6 +660,13 @@ get_messages PROC client:ptr Client,senderId:DWORD,receiverId:DWORD
 		inc ecx
 	.ENDW
 	invoke sqlite_free_table,result
+
+	BZero sqlBuf
+	invoke sprintf,addr sqlBuf,addr updateIsReadSql,receiverId,senderId
+	invoke printf,addr debugStrFormat,addr sqlBuf
+
+	invoke sqlite_exec,hDB,addr sqlBuf,NULL,NULL,offset errorInfo
+
 	ret
 get_messages ENDP
 
@@ -656,9 +683,11 @@ get_last_messages PROC client:ptr Client,senderId:DWORD,receiverId:DWORD
 	local imageSize:DWORD
 	local imageBuf[BUF_SIZE]:DWORD
 	local bytesRead:DWORD
+	local isRecv:DWORD
 
 	BZero sqlBuf
 	BZero responseBuf
+	mov isRecv,1
 
 	invoke sprintf,addr sqlBuf,addr getLastMessagesSql,senderId,receiverId
 	invoke printf,addr debugStrFormat,addr sqlBuf
@@ -693,7 +722,7 @@ get_last_messages PROC client:ptr Client,senderId:DWORD,receiverId:DWORD
 
 		.if content_type == 1
 			BZero responseBuf
-			invoke sprintf,addr responseBuf,addr textResponseFormat,addr content
+			invoke sprintf,addr responseBuf,addr textResponseFormat,isRecv,addr content
 			
 			invoke lstrlen,addr responseBuf
 			mov ecx,eax
@@ -709,7 +738,7 @@ get_last_messages PROC client:ptr Client,senderId:DWORD,receiverId:DWORD
 			mov imageSize,eax
 
 			BZero responseBuf
-			invoke sprintf,addr responseBuf,addr imageResponseFormat,imageSize
+			invoke sprintf,addr responseBuf,addr imageResponseFormat,isRecv,imageSize
 			
 			invoke lstrlen,addr responseBuf
 			mov ebx,eax
@@ -771,9 +800,9 @@ handle_get_messages PROC client:ptr Client,@bufAddr:ptr BYTE
 	mov ebx,[eax].user.id
 	invoke get_messages,client,ebx,receiverId
 
-	GetClient
-	mov ebx,[eax].user.id
-	invoke get_messages,client,receiverId,ebx
+	;GetClient
+	;mov ebx,[eax].user.id
+	;invoke get_messages,client,receiverId,ebx
 	ret
 handle_get_messages ENDP
 
