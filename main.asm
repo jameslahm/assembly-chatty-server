@@ -144,7 +144,7 @@ greetMsg BYTE "Starting Server...",0dh,0ah,0
 argsFormat BYTE "%s",0
 
 loginArgsFormat BYTE "%s %s %s",0
-sendTextArgsFormat BYTE "%s %d %s",0
+sendTextArgsFormat BYTE "%s %d %[^",0dh,0ah,"]",0
 sendImageArgsFormat BYTE "%s %d %d",0
 addFriendArgsFormat BYTE "%s %d",0
 getMessagesArgsFormat BYTE "%s %d",0
@@ -861,7 +861,7 @@ handle_send_message PROC USES eax client:ptr Client,@bufAddr:ptr BYTE
 handle_send_message ENDP
 
 ; 随机生成10位图片文件名
-generateRandomImageName PROC buf:ptr BYTE
+generate_random_image_name PROC buf:ptr BYTE
 	local count:sdword
 	mov count,10
 
@@ -885,8 +885,24 @@ generateRandomImageName PROC buf:ptr BYTE
 
 		dec count
 	.endw
+
+	inc ebx
+	mov eax,02eh
+	mov [ecx+ebx],eax
+
+	inc ebx
+	mov eax,062h
+	mov [ecx+ebx],eax
+
+	inc ebx
+	mov eax,06dh
+	mov [ecx+ebx],eax
+
+	inc ebx
+	mov eax,070h
+	mov [ecx+ebx],eax
 	ret
-generateRandomImageName ENDP
+generate_random_image_name ENDP
 
 handle_send_image PROC USES eax client:ptr Client,@bufAddr:ptr BYTE
 	local commandType[BUF_SIZE]:byte
@@ -910,7 +926,7 @@ handle_send_image PROC USES eax client:ptr Client,@bufAddr:ptr BYTE
 
 	invoke sscanf,@bufAddr,addr sendImageArgsFormat,addr commandType,addr receiverId,addr imageSize
 
-	invoke generateRandomImageName, addr imageName
+	invoke generate_random_image_name, addr imageName
 
 	invoke printf,addr debugStrFormat,addr imageName
 
