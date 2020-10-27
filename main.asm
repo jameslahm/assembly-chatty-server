@@ -123,13 +123,13 @@ insertMessageSql BYTE    "insert into messages(sender_id,receiver_id,content_typ
 ; select data SQLITE
 verifyUserSql  BYTE "select id,username,password from users where username=",22h,"%s",22h," and password=",22h,"%s",22h,";",0
 getFriendsSql    BYTE "select friend1_id,friend2_id from friends where friend1_id = %d or friend2_id=%d",0
-getMessagesSql BYTE "select content_type,content from messages where sender_id = %d and receiver_id = %d;",0
+getMessagesSql BYTE "select sender_id,content_type,content from messages where sender_id = %d and receiver_id = %d or sender_id=%d and receiver_id = %d;",0
 getLastMessagesSql BYTE "select content_type,content from messages where sender_id = %d and receiver_id = %d and is_read = 0;",0
 getUserSql BYTE "select username from users where id=%d",0
 getUsersSql BYTE "select id,username from users",0
 
 ; update data SQLITE
-updateIsReadSql BYTE "update messages set is_read = 1 where sender_id = %d and receiver_id = %d;",0
+updateIsReadSql BYTE "update messages set is_read = 1 where sender_id = %d and receiver_id = %d ;",0
 
 ; WSAData init
 wsaData WSADATA <>
@@ -144,7 +144,7 @@ greetMsg BYTE "Starting Server...",0dh,0ah,0
 argsFormat BYTE "%s",0
 
 loginArgsFormat BYTE "%s %s %s",0
-sendTextArgsFormat BYTE "%s %d %s",0
+sendTextArgsFormat BYTE "%s %d %[^",0dh,0ah,"]",0
 sendImageArgsFormat BYTE "%s %d %d",0
 addFriendArgsFormat BYTE "%s %d",0
 getMessagesArgsFormat BYTE "%s %d",0
@@ -182,8 +182,8 @@ usersNumResponseFormat BYTE "USERS %d",0dh,0ah,0
 usersResponseFormat BYTE "%d %s",0dh,0ah,0
 
 messagesNumResponseFormat BYTE "MESSAGES %d",0dh,0ah,0
-textResponseFormat BYTE "TEXT %s",0dh,0ah,0
-imageResponseFormat BYTE "IMAGE %d",0dh,0ah,0
+textResponseFormat BYTE "TEXT %d %s",0dh,0ah,0
+imageResponseFormat BYTE "IMAGE %d %d",0dh,0ah,0
 
 ; all clients
 clients Client 50 dup(<>)
@@ -453,6 +453,7 @@ handle_get_friends PROC client:ptr Client,@bufAddr:ptr BYTE
 	local result2:DWORD
 	local friendsNumResponseBuf[BUF_SIZE]:BYTE
 	local friendsResponseBuf[BUF_SIZE]:BYTE
+	local count:DWORD
 
 	local count:DWORD
 
@@ -504,6 +505,8 @@ handle_get_friends PROC client:ptr Client,@bufAddr:ptr BYTE
 
 		invoke sprintf,addr sqlBuf2,addr getUserSql,tmpId
 
+		invoke printf,addr debugStrFormat,addr sqlBuf2
+
 		invoke sqlite_slct,hDB,addr sqlBuf2,addr result2,addr row2,addr column2,offset errorInfo
 		
 		mov ebx,result2
@@ -545,12 +548,14 @@ get_messages PROC client:ptr Client,senderId:DWORD,receiverId:DWORD
 	local imageSize:DWORD
 	local imageBuf[BUF_SIZE]:DWORD
 	local bytesRead:DWORD
+	local isRecv:DWORD
+	local tmpSenderId:DWORD
 
 
 	BZero sqlBuf
 	BZero responseBuf
 
-	invoke sprintf,addr sqlBuf,addr getMessagesSql,senderId,receiverId
+	invoke sprintf,addr sqlBuf,addr getMessagesSql,senderId,receiverId,receiverId,senderId
 
 	invoke printf,addr debugStrFormat,addr sqlBuf
 
@@ -575,6 +580,19 @@ get_messages PROC client:ptr Client,senderId:DWORD,receiverId:DWORD
 		mov ebx,result
 		mov edx,index
 		mov ecx,[ebx+4*edx]
+		invoke sscanf,ecx,addr toNumFormat,addr tmpSenderId
+		
+		mov eax,tmpSenderId
+		.if eax == senderId
+			mov isRecv,0
+		.else
+			mov isRecv,1
+		.endif
+
+		inc index
+		mov ebx,result
+		mov edx,index
+		mov ecx,[ebx+4*edx]
 		invoke sscanf,ecx,addr toNumFormat,addr content_type
 		
 		inc index
@@ -585,7 +603,7 @@ get_messages PROC client:ptr Client,senderId:DWORD,receiverId:DWORD
 
 		.if content_type == 1
 			BZero responseBuf
-			invoke sprintf,addr responseBuf,addr textResponseFormat,addr content
+			invoke sprintf,addr responseBuf,addr textResponseFormat,isRecv,addr content
 
 			invoke lstrlen,addr responseBuf
 			mov ecx,eax
@@ -605,7 +623,7 @@ get_messages PROC client:ptr Client,senderId:DWORD,receiverId:DWORD
 			mov imageSize,eax
 
 			BZero responseBuf
-			invoke sprintf,addr responseBuf,addr imageResponseFormat,imageSize
+			invoke sprintf,addr responseBuf,addr imageResponseFormat,isRecv,imageSize
 			
 			invoke lstrlen,addr responseBuf
 			mov ebx,eax
@@ -646,7 +664,7 @@ get_messages PROC client:ptr Client,senderId:DWORD,receiverId:DWORD
 	invoke sqlite_free_table,result
 
 	BZero sqlBuf
-	invoke sprintf,addr sqlBuf,addr updateIsReadSql,senderId,receiverId
+	invoke sprintf,addr sqlBuf,addr updateIsReadSql,receiverId,senderId
 	invoke printf,addr debugStrFormat,addr sqlBuf
 
 	invoke sqlite_exec,hDB,addr sqlBuf,NULL,NULL,offset errorInfo
@@ -667,9 +685,11 @@ get_last_messages PROC client:ptr Client,senderId:DWORD,receiverId:DWORD
 	local imageSize:DWORD
 	local imageBuf[BUF_SIZE]:DWORD
 	local bytesRead:DWORD
+	local isRecv:DWORD
 
 	BZero sqlBuf
 	BZero responseBuf
+	mov isRecv,1
 
 	invoke sprintf,addr sqlBuf,addr getLastMessagesSql,senderId,receiverId
 	invoke printf,addr debugStrFormat,addr sqlBuf
@@ -704,7 +724,7 @@ get_last_messages PROC client:ptr Client,senderId:DWORD,receiverId:DWORD
 
 		.if content_type == 1
 			BZero responseBuf
-			invoke sprintf,addr responseBuf,addr textResponseFormat,addr content
+			invoke sprintf,addr responseBuf,addr textResponseFormat,isRecv,addr content
 			
 			invoke lstrlen,addr responseBuf
 			mov ecx,eax
@@ -720,7 +740,7 @@ get_last_messages PROC client:ptr Client,senderId:DWORD,receiverId:DWORD
 			mov imageSize,eax
 
 			BZero responseBuf
-			invoke sprintf,addr responseBuf,addr imageResponseFormat,imageSize
+			invoke sprintf,addr responseBuf,addr imageResponseFormat,isRecv,imageSize
 			
 			invoke lstrlen,addr responseBuf
 			mov ebx,eax
@@ -782,9 +802,9 @@ handle_get_messages PROC client:ptr Client,@bufAddr:ptr BYTE
 	mov ebx,[eax].user.id
 	invoke get_messages,client,ebx,receiverId
 
-	GetClient
-	mov ebx,[eax].user.id
-	invoke get_messages,client,receiverId,ebx
+	;GetClient
+	;mov ebx,[eax].user.id
+	;invoke get_messages,client,receiverId,ebx
 	ret
 handle_get_messages ENDP
 
@@ -843,7 +863,7 @@ handle_send_message PROC USES eax client:ptr Client,@bufAddr:ptr BYTE
 handle_send_message ENDP
 
 ; 随机生成10位图片文件名
-generateRandomImageName PROC buf:ptr BYTE
+generate_random_image_name PROC buf:ptr BYTE
 	local count:sdword
 	mov count,10
 
@@ -867,8 +887,24 @@ generateRandomImageName PROC buf:ptr BYTE
 
 		dec count
 	.endw
+
+	inc ebx
+	mov eax,02eh
+	mov [ecx+ebx],eax
+
+	inc ebx
+	mov eax,062h
+	mov [ecx+ebx],eax
+
+	inc ebx
+	mov eax,06dh
+	mov [ecx+ebx],eax
+
+	inc ebx
+	mov eax,070h
+	mov [ecx+ebx],eax
 	ret
-generateRandomImageName ENDP
+generate_random_image_name ENDP
 
 handle_send_image PROC USES eax client:ptr Client,@bufAddr:ptr BYTE
 	local commandType[BUF_SIZE]:byte
@@ -892,7 +928,7 @@ handle_send_image PROC USES eax client:ptr Client,@bufAddr:ptr BYTE
 
 	invoke sscanf,@bufAddr,addr sendImageArgsFormat,addr commandType,addr receiverId,addr imageSize
 
-	invoke generateRandomImageName, addr imageName
+	invoke generate_random_image_name, addr imageName
 
 	invoke printf,addr debugStrFormat,addr imageName
 
