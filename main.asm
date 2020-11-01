@@ -55,7 +55,7 @@ SQLITE_FREE_TABLE typedef ptr SQLITE_FREE_TABLE_PROTO
 
 ; 数据结构定义
 User STRUCT
-	id	DWORD 0; 用户id
+	id	DWORD -1;户id
 	password BYTE 30 dup(0);用户密码 最长30个字节
 	username BYTE 30 dup(0);用户名 最长30个字节
 	avatar BYTE 120 dup(0);用户头像链接 最长120个字节
@@ -205,6 +205,19 @@ ENDM
 BZero MACRO buf:=<buf>,bufSize:=<BUF_SIZE>
 	INVOKE RtlZeroMemory,addr buf,bufSize
 ENDM
+
+CheckUser MACRO client:=<client>
+	mov eax,client
+	assume eax:ptr Client
+	push [eax].user.id
+	pop ebx
+	.if ebx==-1
+		GetClient
+		invoke send,[eax].clientSocket,addr failureResponse,failureResponseLen,0
+		jmp handleRequestExit
+	.endif
+ENDM
+
 
 .code
 init_db PROC
@@ -453,8 +466,6 @@ handle_get_friends PROC client:ptr Client,@bufAddr:ptr BYTE
 	local result2:DWORD
 	local friendsNumResponseBuf[BUF_SIZE]:BYTE
 	local friendsResponseBuf[BUF_SIZE]:BYTE
-	local count:DWORD
-
 	local count:DWORD
 
 	BZero sqlBuf
@@ -1039,6 +1050,13 @@ handle_request PROC clientSocket:DWORD
 			invoke handle_login,client,addr @buf
 		.endif
 
+		invoke lstrcmp,addr GET_USERS_COMMAND,addr commandType
+		.if eax==0
+			invoke handle_get_users,client,addr @buf
+		.endif
+
+		CheckUser
+
 		; handle send text
 		invoke lstrcmp,addr SEND_TEXT_COMMAND,addr commandType
 		.if eax==0
@@ -1066,15 +1084,11 @@ handle_request PROC clientSocket:DWORD
 			invoke handle_get_messages,client,addr @buf
 		.endif
 
-		invoke lstrcmp,addr GET_USERS_COMMAND,addr commandType
-		.if eax==0
-			invoke handle_get_users,client,addr @buf
-		.endif
-
 		invoke lstrcmp,addr GET_LASTMESSAGES_COMMAND,addr commandType
 		.if eax==0
 			invoke handle_get_last_messages,client,addr @buf
 		.endif
+handleRequestExit:
 
 	.ENDW
 
