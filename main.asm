@@ -196,6 +196,8 @@ toNumFormat BYTE "%d",0
 toStrFormat BYTE "%s",0
 toNumStrFormat BYTE "%d %s",0
 
+FAKE_SEED DWORD 0
+
 
 GetClient MACRO client:=<client>
 	mov eax,client
@@ -898,6 +900,30 @@ generate_random_image_name PROC buf:ptr BYTE
 
 		dec count
 	.endw
+
+	invoke srand,FAKE_SEED
+
+	mov count,10
+	.while count>=1
+		invoke rand
+		mov edx,0
+		mov ecx,26
+		div ecx
+		mov eax,edx
+		add eax,61h
+		
+		mov ecx,buf
+		add ecx,10
+
+		mov edx,count
+		mov ebx,10
+		sub ebx,edx
+		mov [ecx+ebx],al
+
+		dec count
+	.endw
+
+	inc FAKE_SEED
 
 	inc ebx
 	mov eax,02eh
