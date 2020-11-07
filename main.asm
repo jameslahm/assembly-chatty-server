@@ -1088,6 +1088,7 @@ handle_request PROC clientSocket:DWORD
 		.if eax==0
 			invoke handle_get_last_messages,client,addr @buf
 		.endif
+
 handleRequestExit:
 
 	.ENDW
@@ -1135,7 +1136,7 @@ main PROC
 	invoke init_db
 	INVOKE GetProcessHeap
 	mov hHeap,eax
-	invoke init_server
 	invoke printf,offset greetMsg
+	invoke init_server
 main endp
 end main
